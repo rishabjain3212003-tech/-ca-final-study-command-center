@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1020" />
+  <meta name="description" content="CA Final Study Command Center — local-first study operating system with Google Calendar integration." />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <title>CA Final Study Command Center</title>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">CA FINAL · STUDY OS</div>
+        <h1>Study Command Center</h1>
+      </div>
+      <div class="top-actions">
+        <button id="installBtn" class="btn ghost hidden">Install</button>
+        <button id="quickBackupBtn" class="btn ghost">Backup</button>
+      </div>
+    </header>
+
+    <main id="main"></main>
+
+    <nav class="bottom-nav" id="nav">
+      <button data-view="home" class="nav-item active"><span>⌂</span><small>Home</small></button>
+      <button data-view="today" class="nav-item"><span>◷</span><small>Today</small></button>
+      <button data-view="week" class="nav-item"><span>▦</span><small>Week</small></button>
+      <button data-view="subjects" class="nav-item"><span>▤</span><small>Subjects</small></button>
+      <button data-view="backlog" class="nav-item"><span>↻</span><small>Backlog</small></button>
+      <button data-view="tests" class="nav-item"><span>✓</span><small>Tests</small></button>
+      <button data-view="calendar" class="nav-item"><span>◫</span><small>Calendar</small></button>
+      <button data-view="settings" class="nav-item"><span>⚙</span><small>Settings</small></button>
+    </nav>
+  </div>
+
+  <dialog id="modal">
+    <form method="dialog" class="modal-card" id="modalBody"></form>
+  </dialog>
+
+  <input id="restoreInput" type="file" accept="application/json,.json" hidden />
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
