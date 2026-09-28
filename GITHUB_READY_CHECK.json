@@ -1,0 +1,7 @@
+{
+  "github_pages_workflow": true,
+  "nojekyll": true,
+  "pwa_manifest": true,
+  "service_worker": true,
+  "main_page": true
+}
