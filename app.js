@@ -9,7 +9,7 @@ const isoDate = d => new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOStri
 const clamp = (n,a,b)=>Math.max(a,Math.min(b,n));
 const uid = ()=>crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
-const START="2026-09-24", LECTURE_TARGET="2026-12-15", FINAL_TARGET="2026-12-31";
+const DEFAULT_START="2026-09-24", DEFAULT_LECTURE_TARGET="2026-12-31", DEFAULT_FINAL_TARGET="2026-12-31";
 const DB_NAME="ca-final-study-command-center", DB_VERSION=1;
 let state=null, currentView="home", deferredInstall=null, googleToken=null, googleTokenExpiry=0;
 
@@ -17,7 +17,7 @@ const DEFAULT_STATE = {
   version:1,
   createdAt:Date.now(),
   settings:{
-    timezone:"Asia/Kolkata", examDate:"",
+    timezone:"Asia/Kolkata", officialStart:DEFAULT_START, lectureTarget:DEFAULT_LECTURE_TARGET, syllabusTarget:DEFAULT_FINAL_TARGET, examDate:"",
     maxDailyHours:10,minBreakMin:20,weeklyBufferDay:"Saturday",weeklyReviewDay:"Sunday",
     dailyPlanEnabled:true, googleClientId:"",
     studyCalendarId:"",lastCalendarSync:0,lastCloudBackup:0,driveBackupFileId:"",
@@ -62,7 +62,10 @@ function deepClone(x){return JSON.parse(JSON.stringify(x))}
 async function loadState(){
   const saved=await idbGet("kv","state");
   state=saved||deepClone(DEFAULT_STATE);
-  if(!state.settings.examDate) state.settings.examDate="";
+  if(!state.settings.officialStart) state.settings.officialStart=DEFAULT_START;
+  if(!state.settings.lectureTarget) state.settings.lectureTarget=DEFAULT_LECTURE_TARGET;
+  if(!state.settings.syllabusTarget) state.settings.syllabusTarget=DEFAULT_FINAL_TARGET;
+  if(state.settings.examDate===undefined) state.settings.examDate="";
   return state;
 }
 let saveTimer=null;
@@ -98,14 +101,19 @@ function upsertTask(t){
 }
 function taskDate(t){return t.plannedDate || (t.start?new Date(t.start).toISOString().slice(0,10):null)}
 function phaseFor(ds){
-  if(ds>="2026-09-24"&&ds<="2026-10-15")return"Foundation";
-  if(ds>="2026-10-16"&&ds<="2026-11-15")return"Heavy Coverage";
-  if(ds>="2026-11-16"&&ds<="2026-12-10")return"Syllabus Closure";
-  if(ds>="2026-12-11"&&ds<="2026-12-15")return"Lecture Closure";
-  if(ds>="2026-12-16")return"Revision & Consolidation";
-  return"Pre-plan";
+  const start=state.settings.officialStart||DEFAULT_START;
+  const lectureTarget=state.settings.lectureTarget||DEFAULT_LECTURE_TARGET;
+  if(ds<start)return"Pre-plan";
+  if(ds<="2026-10-15")return"Foundation";
+  if(ds<="2026-11-15")return"Heavy Coverage";
+  const closeStart=new Date(lectureTarget+"T00:00:00");
+  closeStart.setDate(closeStart.getDate()-10);
+  const closeStartStr=isoDate(closeStart);
+  if(ds<closeStartStr)return"Syllabus Closure";
+  if(ds<=lectureTarget)return"Lecture Closure";
+  return"Revision & Consolidation";
 }
-function planEnd(){return state.settings.examDate || FINAL_TARGET}
+function planEnd(){return state.settings.examDate || state.settings.syllabusTarget || DEFAULT_FINAL_TARGET}
 function buildCoreTasks(){
   for(const s of state.subjects){
     if(!s.total)continue;
@@ -125,14 +133,14 @@ function buildCoreTasks(){
       }
     }
   }
-  let d=new Date(START+"T00:00:00"),end=new Date(planEnd()+"T00:00:00");
+  let d=new Date((state.settings.officialStart||DEFAULT_START)+"T00:00:00"),end=new Date(planEnd()+"T00:00:00");
   while(d<=end){
     const ds=isoDate(d),day=d.getDay();
     if(day===0){
       const k=`WEEKLY:${ds}`,o=byKey(k);
       upsertTask({taskKey:k,type:"WEEKLY",title:"Weekly Review",duration:45,status:o?.status||"Not Started",priority:92,plannedDate:ds,start:o?.start||null,end:o?.end||null,googleEventId:o?.googleEventId||null});
     }
-    if(ds>="2026-12-16"&&[2,4,6].includes(day)){
+    if(ds>(state.settings.lectureTarget||DEFAULT_LECTURE_TARGET)&&[2,4,6].includes(day)){
       const k=`RTP_MTP:${ds}`,o=byKey(k);
       upsertTask({taskKey:k,type:"RTP_MTP",title:"RTP / MTP / Past Paper Practice",duration:120,status:o?.status||"Not Started",priority:94,plannedDate:ds,start:o?.start||null,end:o?.end||null,googleEventId:o?.googleEventId||null});
     }
@@ -146,12 +154,12 @@ function eligibleTaskForDay(t,ds){
   if(t.status==="Completed")return false;
   if(t.parentKey){const p=byKey(t.parentKey);if(p&&p.status!=="Completed")return false}
   if(["WEEKLY","RTP_MTP","TEST","REVISION","BUFFER"].includes(t.type)&&t.plannedDate)return t.plannedDate===ds;
-  if(t.type==="LECTURE"&&ds>LECTURE_TARGET&&!["Missed","Rescheduled"].includes(t.status))return false;
+  if(t.type==="LECTURE"&&ds>(state.settings.lectureTarget||DEFAULT_LECTURE_TARGET)&&!["Missed","Rescheduled"].includes(t.status))return false;
   return !t.plannedDate || ["Missed","Rescheduled"].includes(t.status);
 }
 function schedulePlan(from=isoDate(new Date()),through=planEnd()){
   buildCoreTasks();
-  let d=new Date((from<START?START:from)+"T00:00:00"),end=new Date(through+"T00:00:00"),assigned=0;
+  const startDate=state.settings.officialStart||DEFAULT_START; let d=new Date((from<startDate?startDate:from)+"T00:00:00"),end=new Date(through+"T00:00:00"),assigned=0;
   while(d<=end){
     const ds=isoDate(d), maxMin=Math.round((state.settings.maxDailyHours||10)*60);
     let used=0;
@@ -197,11 +205,12 @@ function taskHtml(t,actions=true){
   ${actions?`<div class="row"><button class="btn success" data-act="complete" data-key="${escapeHtml(t.taskKey)}">✓</button><button class="btn secondary" data-act="move" data-key="${escapeHtml(t.taskKey)}">↔</button><button class="btn danger" data-act="miss" data-key="${escapeHtml(t.taskKey)}">!</button></div>`:""}</div>`;
 }
 function homeView(){
-  const s=stats(), today=new Date(), days15=Math.max(0,Math.ceil((new Date(LECTURE_TARGET+"T23:59:59")-today)/86400000)),days31=Math.max(0,Math.ceil((new Date(FINAL_TARGET+"T23:59:59")-today)/86400000)),proj=projectedCompletion();
+  const s=stats(), today=new Date(), lectureTarget=state.settings.lectureTarget||DEFAULT_LECTURE_TARGET, syllabusTarget=state.settings.syllabusTarget||DEFAULT_FINAL_TARGET;
+  const daysLecture=Math.max(0,Math.ceil((new Date(lectureTarget+"T23:59:59")-today)/86400000)),daysSyllabus=Math.max(0,Math.ceil((new Date(syllabusTarget+"T23:59:59")-today)/86400000)),proj=projectedCompletion();
   const phase=phaseFor(isoDate(today)),cloud=state.settings.lastCloudBackup?fmtDate(new Date(state.settings.lastCloudBackup)):"Never";
-  return `<section class="hero"><div class="chips"><span class="chip">${phase}</span><span class="chip">NO EXPIRY</span><span class="chip">PWA WEBSITE</span></div><h2>CA Final<br>Study Operating System</h2><p>Lecture closure by 15 December 2026. Revision, RTP/MTP, tests and consolidation dominate after that. The website continues through your exam date.</p></section>
+  return `<section class="hero"><div class="chips"><span class="chip">${phase}</span><span class="chip">NO EXPIRY</span><span class="chip">PWA WEBSITE</span></div><h2>CA Final<br>Study Operating System</h2><p>Lecture target: ${fmtDate(new Date(lectureTarget+"T00:00:00"))}. Revision, RTP/MTP, tests and consolidation continue after lecture closure through your exam date.</p></section>
   <div class="grid kpi-grid">
-    ${kpi("To 15 Dec",days15+" d","Lecture target")}${kpi("To 31 Dec",days31+" d","Syllabus target")}${kpi("Remaining",s.remaining,"Known totals")}${kpi("Completion",s.pct.toFixed(1)+"%","Known totals")}${kpi("Backlog",s.backlog.length,"Needs recovery")}${kpi("Projected",fmtDate(proj),"Configured pace")}
+    ${kpi("Lecture target",daysLecture+" d",fmtDate(new Date(lectureTarget+"T00:00:00")))}${kpi("Syllabus target",daysSyllabus+" d",fmtDate(new Date(syllabusTarget+"T00:00:00")))}${kpi("Remaining",s.remaining,"Known totals")}${kpi("Completion",s.pct.toFixed(1)+"%","Known totals")}${kpi("Backlog",s.backlog.length,"Needs recovery")}${kpi("Projected",fmtDate(proj),"Configured pace")}
   </div>
   <div class="card"><h3>Today’s Smart Message</h3><p>${smartMessage()}</p></div>
   <div class="actions"><button class="btn wide" id="buildPlan">⚡ Build / Refresh Plan</button><button class="btn secondary wide" id="recoveryMode">🛟 Recovery Mode</button></div>
@@ -210,9 +219,9 @@ function homeView(){
   <div class="card"><h3>Data Protection</h3><p>IndexedDB stores your study data in this browser. Rolling local snapshots are kept automatically. Last Google Drive app-data backup: <b>${cloud}</b>.</p><div class="row"><button class="btn secondary" data-nav="settings">Backup & Restore</button><button class="btn secondary" id="cloudBackupHome">Cloud backup now</button></div></div>`;
 }
 function smartMessage(){
-  const s=stats(), today=isoDate(new Date()), tasks=s.tt.filter(t=>t.status!=="Completed"), proj=projectedCompletion(), target=new Date(LECTURE_TARGET+"T23:59:59");
+  const s=stats(), today=isoDate(new Date()), tasks=s.tt.filter(t=>t.status!=="Completed"), proj=projectedCompletion(), lectureTarget=state.settings.lectureTarget||DEFAULT_LECTURE_TARGET, target=new Date(lectureTarget+"T23:59:59");
   const schedule=tasks.slice(0,5).map(t=>`${t.start?fmtTime(new Date(t.start)):"Unscheduled"} ${t.title}`).join("; ");
-  return `Today is ${fmtDate(new Date())}. You have ${s.remaining} known lectures remaining and ${s.backlog.length} backlog task(s). ${schedule||"Build the smart plan to generate today's schedule."} Projected lecture completion is ${fmtDate(proj)} — ${proj<=target?"within":"after"} the 15 December target.`;
+  return `Today is ${fmtDate(new Date())}. You have ${s.remaining} known lectures remaining and ${s.backlog.length} backlog task(s). ${schedule||"Build the smart plan to generate today's schedule."} Projected lecture completion is ${fmtDate(proj)} — ${proj<=target?"within":"after"} your ${fmtDate(target)} lecture target.`;
 }
 function todayView(){
   const ds=isoDate(new Date()),tasks=state.tasks.filter(t=>taskDate(t)===ds).sort((a,b)=>(a.start||9e15)-(b.start||9e15)),s=stats();
@@ -254,7 +263,7 @@ function calendarView(){
 function settingsView(){
   const last=state.metadata.lastSaved?new Date(state.metadata.lastSaved):null;
   return `<div class="section-title">Settings</div>
-  <div class="card"><h3>Exam horizon</h3><p>The website never expires. Enter your actual CA Final exam date when known so revision/test planning can continue after 31 December 2026.</p><div class="field"><label>Exam date</label><input type="date" id="examDate" value="${state.settings.examDate||""}"></div></div>
+  <div class="card"><h3>Study Dates</h3><p>You can change these dates anytime without editing GitHub code. The website never expires.</p><div class="form-grid"><div class="field"><label>Official study start</label><input type="date" id="officialStart" value="${state.settings.officialStart||DEFAULT_START}"></div><div class="field"><label>Lecture completion target</label><input type="date" id="lectureTarget" value="${state.settings.lectureTarget||DEFAULT_LECTURE_TARGET}"></div><div class="field"><label>Syllabus completion target</label><input type="date" id="syllabusTarget" value="${state.settings.syllabusTarget||DEFAULT_FINAL_TARGET}"></div><div class="field"><label>Actual exam date (optional)</label><input type="date" id="examDate" value="${state.settings.examDate||""}"></div></div></div>
   <div class="card"><h3>Planning</h3><div class="form-grid"><div class="field"><label>Maximum daily study hours</label><input id="maxHours" inputmode="decimal" value="${state.settings.maxDailyHours}"></div><div class="field"><label>Minimum break (minutes)</label><input id="minBreak" inputmode="numeric" value="${state.settings.minBreakMin}"></div></div></div>
   <div class="card"><h3>Google OAuth for this website</h3><p>Create a Google OAuth 2.0 <b>Web application</b> client and paste its Client ID here. The Client ID is not a password/secret.</p><div class="field"><label>Google Web Client ID</label><input id="googleClientId" value="${escapeHtml(state.settings.googleClientId||"")}" placeholder="...apps.googleusercontent.com"></div><div class="notice warn small">For Google Calendar/Drive integration, enable Calendar API and Drive API and add this website's HTTPS origin to Authorized JavaScript origins.</div></div>
   <div class="card"><h3>Backup & Restore</h3><p>Browser storage can be cleared by the browser or device. Keep an external backup. Google Drive app-data backup is private to this web app and uses the narrow <code>drive.appdata</code> scope.</p><div class="row"><button class="btn" id="exportBackup">Export JSON</button><button class="btn secondary" id="restoreBackup">Restore JSON</button><button class="btn secondary" id="cloudBackup">Backup to Google Drive</button><button class="btn secondary" id="cloudRestore">Restore from Google Drive</button></div><div class="small muted">Last local save: ${last?fmtDate(last)+" "+fmtTime(last):"Never"} · local rolling snapshots: up to 30</div></div>
@@ -306,7 +315,7 @@ function bindView(){
   });
   if(D.querySelector("#createRevision"))D.querySelector("#createRevision").onclick=async()=>{createRevisionCycle(D.querySelector("#revSubject").value,D.querySelector("#revLabel").value,D.querySelector("#revDate").value,Number(D.querySelector("#revDuration").value)||45);await saveState({snapshot:true});render()};
   if(D.querySelector("#addTest"))D.querySelector("#addTest").onclick=async()=>{const sub=D.querySelector("#testSubject").value,date=D.querySelector("#testDate").value,cov=D.querySelector("#testCoverage").value,k=`TEST:${sub}:${date}:${uid().slice(0,6)}`;upsertTask({taskKey:k,subject:sub,type:"TEST",title:`Test | ${cov}`,duration:Number(D.querySelector("#testDuration").value)||180,status:"Not Started",priority:96,plannedDate:date,start:null,end:null,marks:Number(D.querySelector("#testMarks").value)||100,targetScore:Number(D.querySelector("#testTarget").value)||60});await saveState({snapshot:true});render()};
-  if(D.querySelector("#saveSettings"))D.querySelector("#saveSettings").onclick=async()=>{state.settings.examDate=D.querySelector("#examDate").value;state.settings.maxDailyHours=Number(D.querySelector("#maxHours").value)||10;state.settings.minBreakMin=Number(D.querySelector("#minBreak").value)||20;state.settings.googleClientId=D.querySelector("#googleClientId").value.trim();MAIN.querySelectorAll("[data-block]").forEach(i=>state.studyBlocks[Number(i.dataset.block)][i.dataset.bfield]=i.value);buildCoreTasks();await saveState({snapshot:true});toast("Settings saved");render()};
+  if(D.querySelector("#saveSettings"))D.querySelector("#saveSettings").onclick=async()=>{state.settings.officialStart=D.querySelector("#officialStart").value||DEFAULT_START;state.settings.lectureTarget=D.querySelector("#lectureTarget").value||DEFAULT_LECTURE_TARGET;state.settings.syllabusTarget=D.querySelector("#syllabusTarget").value||DEFAULT_FINAL_TARGET;state.settings.examDate=D.querySelector("#examDate").value;state.settings.maxDailyHours=Number(D.querySelector("#maxHours").value)||10;state.settings.minBreakMin=Number(D.querySelector("#minBreak").value)||20;state.settings.googleClientId=D.querySelector("#googleClientId").value.trim();MAIN.querySelectorAll("[data-block]").forEach(i=>state.studyBlocks[Number(i.dataset.block)][i.dataset.bfield]=i.value);buildCoreTasks();await saveState({snapshot:true});toast("Dates and settings saved");render()};
   if(D.querySelector("#exportBackup"))D.querySelector("#exportBackup").onclick=exportBackup;
   if(D.querySelector("#restoreBackup"))D.querySelector("#restoreBackup").onclick=()=>restoreInput.click();
   if(D.querySelector("#cloudBackup"))D.querySelector("#cloudBackup").onclick=()=>cloudBackup().then(()=>render()).catch(e=>toast(e.message,"error"));
